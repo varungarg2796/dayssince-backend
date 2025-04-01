@@ -12,14 +12,21 @@ import {
   ParseUUIDPipe,
   HttpCode,
   HttpStatus,
+  Query,
+  ParseIntPipe,
+  DefaultValuePipe,
 } from '@nestjs/common';
-import { CountersService } from './counters.service';
 import { CreateCounterDto } from './dto/create-counter.dto';
 import { UpdateCounterDto } from './dto/update-counter.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard'; // Import our guard
 import { Request } from 'express';
+import {
+  CountersService,
+  FindPublicCountersOptions,
+  PaginatedCountersResult,
+} from './counters.service';
+import { Public } from '../auth/decorators/public.decorator';
 
-// Define shape of request.user after JwtAuthGuard runs
 interface RequestWithUser extends Request {
   user: {
     id: string; // Matches what JwtStrategy.validate returns
@@ -89,11 +96,40 @@ export class CountersController {
 
   // --- Public Routes (Implement Later) ---
   // We haven't implemented the service logic for these yet
+  @Public() // Mark this route as public, bypassing controller-level JwtAuthGuard
+  @Get('public')
+  findPublic(
+    // Use @Query() with pipes for validation and defaults
+    @Query('page', new DefaultValuePipe(1), ParseIntPipe) page: number,
+    @Query('limit', new DefaultValuePipe(12), ParseIntPipe) limit: number,
+    @Query('sortBy', new DefaultValuePipe('createdAt'))
+    sortBy: 'startDate' | 'createdAt' | 'name' | 'popularity',
+    @Query('sortOrder', new DefaultValuePipe('desc')) sortOrder: 'asc' | 'desc',
+    @Query('search', new DefaultValuePipe('')) search: string,
+    @Query('tags', new DefaultValuePipe('')) tags: string,
+  ): Promise<PaginatedCountersResult> {
+    const options: FindPublicCountersOptions = {
+      page: Math.max(1, page),
+      limit: Math.max(1, Math.min(50, limit)),
+      sortBy,
+      sortOrder: sortOrder === 'asc' ? 'asc' : 'desc',
+      search: search.trim() || undefined,
+      tagSlugs: tags
+        ? tags
+            .split(',')
+            .map((slug) => slug.trim())
+            .filter(Boolean)
+        : undefined,
+    };
+    return this.countersService.findPublic(options);
+  }
 
-  // GET /api/counters/public (Needs service logic, pagination, filtering, no guard)
-  // @Get('public')
-  // @UseGuards() // Remove guard for public route
-  // findPublic(/* ... query params ... */) { ... }
+  @Public() // Mark as public
+  @Get(':id')
+  findOnePublic(@Param('id', ParseUUIDPipe) id: string) {
+    // Service method handles view count increment and privacy check
+    return this.countersService.findOnePublic(id);
+  }
 
   // GET /api/counters/:id (Needs service logic for public view, view count, no guard for public part)
   // @Get(':id')

@@ -5,18 +5,28 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
+import { Reflector } from '@nestjs/core';
+import { IS_PUBLIC_KEY } from '../decorators/public.decorator';
 import { Observable } from 'rxjs';
 import { JsonWebTokenError, TokenExpiredError } from '@nestjs/jwt';
 
 @Injectable()
 export class JwtAuthGuard extends AuthGuard('jwt') {
-  // Use 'jwt' strategy (we'll create it next)
+  constructor(private reflector: Reflector) {
+    super();
+  }
 
   canActivate(
     context: ExecutionContext,
   ): boolean | Promise<boolean> | Observable<boolean> {
-    // Add custom authentication logic here
-    // for example, call super.logIn(request) to establish a session.
+    // Check if the route has the @Public() decorator
+    const isPublic = this.reflector.getAllAndOverride<boolean>(IS_PUBLIC_KEY, [
+      context.getHandler(),
+      context.getClass(),
+    ]);
+    if (isPublic) {
+      return true;
+    }
     return super.canActivate(context);
   }
 
