@@ -67,14 +67,13 @@ export class CountersService {
       const mappedTags = counter.tags.map((ct: any) => ct.tag);
       return { ...counter, tags: mappedTags }; // Return new object with mapped tags
     }
-    return counter; // Return original if no tags
+    return counter;
   }
 
   async create(
     createCounterDto: CreateCounterDto,
     userId: string,
   ): Promise<Counter> {
-    // Return type might need adjustment based on include
     const { tagIds, startDate, ...restData } = createCounterDto;
 
     const data: Prisma.CounterCreateInput = {
