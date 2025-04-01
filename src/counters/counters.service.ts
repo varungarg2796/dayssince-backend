@@ -1,4 +1,3 @@
-// src/counters/counters.service.ts
 import {
   Injectable,
   NotFoundException,
@@ -14,19 +13,17 @@ export interface UserCounters {
   archived: Counter[];
 }
 
-// Interface for pagination options
 export interface FindPublicCountersOptions {
   page?: number;
   limit?: number;
-  sortBy?: 'startDate' | 'createdAt' | 'name' | 'popularity'; // Popularity = viewCount
+  sortBy?: 'startDate' | 'createdAt' | 'name' | 'popularity';
   sortOrder?: 'asc' | 'desc';
   search?: string;
-  tagSlugs?: string[]; // Filter by tag slugs
+  tagSlugs?: string[];
 }
 
-// Interface for paginated result
 export interface PaginatedCountersResult {
-  items: Counter[];
+  items: (Counter & { creator?: { username: string } })[];
   totalItems: number;
   totalPages: number;
   currentPage: number;
@@ -36,10 +33,17 @@ export interface PaginatedCountersResult {
 export class CountersService {
   constructor(private readonly prisma: PrismaService) {}
 
-  private async findOneOrFail(id: string, userId: string): Promise<Counter> {
+  private readonly includeUserAndTags = {
+    tags: { include: { tag: true } },
+    user: { select: { username: true } }, // Include user's username
+  };
+  private async findOneOrFail(
+    id: string,
+    userId: string,
+  ): Promise<Counter & { user: { username: string } }> {
     const counter = await this.prisma.counter.findUnique({
       where: { id },
-      include: { tags: { include: { tag: true } } }, // Include tags info
+      include: this.includeUserAndTags,
     });
 
     if (!counter) {
@@ -50,27 +54,33 @@ export class CountersService {
         'You do not have permission to access this counter',
       );
     }
-    return this.mapCounterTags(counter);
+    // No need for mapCounterTags if include handles it, but ensure type matches
+    return this.mapCounterTags(counter) as Counter & {
+      user: { username: string };
+    }; // Ensure type assertion if mapCounterTags modifies structure
   }
 
+  // Ensure mapCounterTags doesn't remove the user info
   private mapCounterTags(counter: any) {
     if (counter?.tags) {
-      counter.tags = counter.tags.map((ct: any) => ct.tag);
+      // Map tags but preserve other fields like 'user'
+      const mappedTags = counter.tags.map((ct: any) => ct.tag);
+      return { ...counter, tags: mappedTags }; // Return new object with mapped tags
     }
-    return counter;
+    return counter; // Return original if no tags
   }
 
   async create(
     createCounterDto: CreateCounterDto,
     userId: string,
   ): Promise<Counter> {
+    // Return type might need adjustment based on include
     const { tagIds, startDate, ...restData } = createCounterDto;
 
     const data: Prisma.CounterCreateInput = {
       ...restData,
-      startDate: new Date(startDate), // Convert ISO string to Date object
-      user: { connect: { id: userId } }, // Connect to the user creating it
-      // Connect to tags if tagIds are provided
+      startDate: new Date(startDate),
+      user: { connect: { id: userId } },
       ...(tagIds &&
         tagIds.length > 0 && {
           tags: {
@@ -83,7 +93,7 @@ export class CountersService {
 
     const newCounter = await this.prisma.counter.create({
       data,
-      include: { tags: { include: { tag: true } } }, // Include tags on create response
+      include: this.includeUserAndTags, // Use shared include
     });
     return this.mapCounterTags(newCounter);
   }
@@ -91,12 +101,13 @@ export class CountersService {
   async findMine(userId: string): Promise<UserCounters> {
     const counters = await this.prisma.counter.findMany({
       where: { userId: userId },
-      orderBy: { createdAt: 'desc' }, // Or sort as needed
-      include: { tags: { include: { tag: true } } }, // Include tags info
+      orderBy: { createdAt: 'desc' },
+      include: this.includeUserAndTags, // Use shared include
     });
 
     const mappedCounters = counters.map(this.mapCounterTags);
 
+    // Types need to align with included data
     const active = mappedCounters.filter((c) => c.archivedAt === null);
     const archived = mappedCounters.filter((c) => c.archivedAt !== null);
 
@@ -108,20 +119,19 @@ export class CountersService {
     updateCounterDto: UpdateCounterDto,
     userId: string,
   ): Promise<Counter> {
-    await this.findOneOrFail(id, userId); // Ensure ownership and existence
+    // Return type might need adjustment
+    await this.findOneOrFail(id, userId); // Ensures ownership and existence
 
     const { tagIds, startDate, ...restData } = updateCounterDto;
 
     const data: Prisma.CounterUpdateInput = {
       ...restData,
-      ...(startDate && { startDate: new Date(startDate) }), // Convert if provided
+      ...(startDate && { startDate: new Date(startDate) }),
     };
 
     if (tagIds !== undefined) {
       data.tags = {
-        // First, disconnect all existing tags for this counter
         deleteMany: {},
-        // Then, connect the new set of tags provided
         ...(tagIds.length > 0 && {
           create: tagIds.map((tagId) => ({
             tag: { connect: { id: tagId } },
@@ -133,47 +143,46 @@ export class CountersService {
     const updatedCounter = await this.prisma.counter.update({
       where: { id },
       data,
-      include: { tags: { include: { tag: true } } }, // Include updated tags
+      include: this.includeUserAndTags, // Use shared include
     });
     return this.mapCounterTags(updatedCounter);
   }
 
   async archive(id: string, userId: string): Promise<Counter> {
-    const counter = await this.findOneOrFail(id, userId); // Verify ownership
+    // Return type might need adjustment
+    const counter = await this.findOneOrFail(id, userId);
 
     if (counter.archivedAt) {
-      return counter; // Already archived, do nothing
+      return this.mapCounterTags(counter); // Already archived
     }
 
     const archivedCounter = await this.prisma.counter.update({
       where: { id },
-      data: { archivedAt: new Date() }, // Set archive timestamp to now
-      include: { tags: { include: { tag: true } } },
+      data: { archivedAt: new Date() },
+      include: this.includeUserAndTags, // Use shared include
     });
     return this.mapCounterTags(archivedCounter);
   }
 
   async unarchive(id: string, userId: string): Promise<Counter> {
-    const counter = await this.findOneOrFail(id, userId); // Verify ownership
+    // Return type might need adjustment
+    const counter = await this.findOneOrFail(id, userId);
 
     if (!counter.archivedAt) {
-      return counter; // Already active, do nothing
+      return this.mapCounterTags(counter); // Already active
     }
 
     const unarchivedCounter = await this.prisma.counter.update({
       where: { id },
-      data: { archivedAt: null }, // Set archive timestamp to null
-      include: { tags: { include: { tag: true } } },
+      data: { archivedAt: null },
+      include: this.includeUserAndTags, // Use shared include
     });
     return this.mapCounterTags(unarchivedCounter);
   }
 
   async remove(id: string, userId: string): Promise<void> {
     await this.findOneOrFail(id, userId); // Verify ownership
-
-    await this.prisma.counter.delete({
-      where: { id },
-    });
+    await this.prisma.counter.delete({ where: { id } });
   }
 
   async findPublic(
@@ -183,7 +192,7 @@ export class CountersService {
 
     const {
       page = 1,
-      limit = 12, // Default items per page
+      limit = 12,
       sortBy = 'createdAt',
       sortOrder = 'desc',
       search,
@@ -193,108 +202,77 @@ export class CountersService {
     const skip = (page - 1) * limit;
     const take = limit;
 
-    // --- Build WHERE clause ---
     const where: Prisma.CounterWhereInput = {
-      isPrivate: false, // Only fetch public counters
-      archivedAt: null, // Only fetch active counters (usually desired for Explore)
-
-      // Search logic (simple search on name/description)
+      isPrivate: false,
+      archivedAt: null,
       ...(search && {
         OR: [
           { name: { contains: search, mode: 'insensitive' } },
           { description: { contains: search, mode: 'insensitive' } },
         ],
       }),
-
-      // Tag filtering logic (match counters having ALL specified tags)
       ...(tagSlugs &&
         tagSlugs.length > 0 && {
-          tags: {
-            // Check relation CounterTag using 'some' if ANY tag matches, or 'every' if ALL must match
-            // Let's use 'some' for broader filtering initially
-            some: {
-              tag: {
-                slug: { in: tagSlugs }, // Match tag slugs in the provided array
-              },
-            },
-          },
+          tags: { some: { tag: { slug: { in: tagSlugs } } } },
         }),
     };
-    // -----------------------
 
-    // --- Build ORDER BY clause ---
     const orderBy: Prisma.CounterOrderByWithRelationInput = {};
     if (sortBy === 'popularity') {
       orderBy.viewCount = sortOrder;
     } else {
-      // Handle other sort fields (startDate, createdAt, name)
       orderBy[sortBy] = sortOrder;
     }
-    // Add a secondary sort for consistency if needed, e.g., by createdAt
     if (sortBy !== 'createdAt') {
-      orderBy.createdAt = 'desc'; // Example secondary sort
+      orderBy.createdAt = 'desc';
     }
-    // --------------------------
 
-    // --- Perform Queries ---
-    // Use transaction to get count and items efficiently
     const [totalItems, items] = await this.prisma.$transaction([
-      // Query 1: Get total count matching the WHERE clause
       this.prisma.counter.count({ where }),
-      // Query 2: Get paginated items matching WHERE, ORDER BY, include tags
       this.prisma.counter.findMany({
         where,
         skip,
         take,
         orderBy,
-        include: { tags: { include: { tag: true } } }, // Include tags
+        include: this.includeUserAndTags, // Use shared include
       }),
     ]);
-    // ---------------------
 
-    const mappedItems = items.map(this.mapCounterTags); // Map tags for clean output
+    const mappedItems = items.map(this.mapCounterTags);
     const totalPages = Math.ceil(totalItems / limit);
 
     return {
-      items: mappedItems,
+      items: mappedItems, // Type assertion might be needed if TS doesn't infer user field
       totalItems,
       totalPages,
       currentPage: page,
     };
   }
 
-  // --- NEW: Find Single Public Counter (and Increment View) ---
   async findOnePublic(id: string): Promise<Counter | null> {
+    // Return type might need adjustment
     console.log(`Fetching public counter ID: ${id}`);
 
-    // Use updateMany to potentially increment view count and fetch in one conceptual step
-    // Update first to avoid race conditions, then fetch the possibly updated record
-    // Note: updateMany doesn't return the record directly.
-
-    // 1. Try to increment view count WHERE it's public and matches ID
     await this.prisma.counter.updateMany({
       where: { id: id, isPrivate: false },
       data: { viewCount: { increment: 1 } },
     });
 
-    // 2. Fetch the counter regardless of whether view count was incremented
     const counter = await this.prisma.counter.findUnique({
       where: { id },
-      include: { tags: { include: { tag: true } } },
+      include: this.includeUserAndTags, // Use shared include
     });
 
-    // 3. Check privacy *after* fetching
     if (!counter) {
       console.log(`Counter ID ${id} not found.`);
       throw new NotFoundException(`Counter with ID ${id} not found`);
     }
     if (counter.isPrivate) {
       console.log(`Counter ID ${id} is private. Access denied.`);
-      // Optionally allow owner access here if needed later, otherwise deny
       throw new ForbiddenException('This counter is private');
     }
 
     console.log(`Returning public counter ID: ${id}, view count updated.`);
-    return this.mapCounterTags(counter); // Map tags before returning
+    return this.mapCounterTags(counter);
   }
 }
