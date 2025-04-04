@@ -9,6 +9,7 @@ import {
   UseGuards,
   HttpCode,
   HttpStatus,
+  Body,
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { Request, Response } from 'express';
@@ -16,6 +17,8 @@ import { AuthService, Tokens } from './auth.service';
 import { User } from '@prisma/client';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { ConfigService } from '@nestjs/config'; // <-- Import ConfigService
+import { RefreshTokenDto } from './dto/refresh-token.dto';
+import { Public } from './decorators/public.decorator';
 
 // Define the shape of the Request object after Passport attaches the user
 interface RequestWithUser extends Request {
@@ -79,15 +82,33 @@ export class AuthController {
     }
   }
 
-  @UseGuards(JwtAuthGuard) // Still useful to ensure only logged-in users can trigger this
+  @Public()
   @Post('logout')
-  @HttpCode(HttpStatus.OK)
-  async logout(@Req() req: RequestWithUser /* Removed @Res */) {
-    // With header auth, frontend is responsible for discarding tokens.
-    // Backend only acknowledges. Implement server-side revocation if needed later.
-    console.log(`Logout request acknowledged for user ${req.user.id}`);
-    return { message: 'Logout acknowledged' };
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async logout(
+    @Body() body: Partial<RefreshTokenDto>,
+    @Req() req: RequestWithUser,
+  ) {
+    const userId = (req.user as { id: string })?.id; // Get user ID from access token payload
+
+    if (!userId) {
+      // Should not happen if JwtAuthGuard passed, but defensive check
+      console.warn('Logout attempt without valid user session identification.');
+      return; // Or throw an error
+    }
+
+    console.log(`Logout request initiated by user ${userId}.`);
+    // Call revoke, primarily using userId, pass RT as secondary if needed by service logic
+    await this.authService.revokeRefreshToken(body.refreshToken, userId);
   }
 
-  // Implement /refresh endpoint later
+  @Public()
+  @Post('refresh')
+  @HttpCode(HttpStatus.OK)
+  async refreshTokens(
+    @Body() body: RefreshTokenDto,
+  ): Promise<{ accessToken: string }> {
+    // Uses RefreshTokenDto
+    return this.authService.refreshTokens(body.refreshToken);
+  }
 }

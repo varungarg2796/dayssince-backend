@@ -20,9 +20,8 @@ model User {
   avatarUrl  String?   @map("avatar_url")
   createdAt  DateTime  @default(now()) @map("created_at")
   updatedAt  DateTime  @updatedAt @map("updated_at")
-
   counters   Counter[] // Relation field: One User can have many Counters
-
+  refreshTokens RefreshToken[]
   @@map("users") // Maps this model to the 'users' table
 }
 
@@ -65,4 +64,21 @@ model CounterTag {
 
   @@id([counterId, tagId]) // Composite primary key
   @@map("counter_tags")
+}
+
+// --- NEW: RefreshToken Model ---
+model RefreshToken {
+  id        String   @id @default(cuid()) // Use CUID for simplicity or UUID
+  tokenHash String   @unique @map("token_hash") // Store a HASH, not the token itself!
+  userId    String   @map("user_id")
+  isRevoked Boolean  @default(false) @map("is_revoked")
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at") // Tracks last usage implicitly
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade) // Link to User
+
+  @@index([userId]) // Index for quick lookup by user
+  @@index([expiresAt]) // Index for cleaning up expired tokens
+  @@map("refresh_tokens") // Table name
 }
