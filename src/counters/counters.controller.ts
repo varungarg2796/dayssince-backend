@@ -1,4 +1,3 @@
-// src/counters/counters.controller.ts
 import {
   Controller,
   Get,
@@ -18,7 +17,7 @@ import {
 } from '@nestjs/common';
 import { CreateCounterDto } from './dto/create-counter.dto';
 import { UpdateCounterDto } from './dto/update-counter.dto';
-import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard'; // Import our guard
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { Request } from 'express';
 import {
   CountersService,
@@ -26,80 +25,73 @@ import {
   PaginatedCountersResult,
 } from './counters.service';
 import { Public } from '../auth/decorators/public.decorator';
+import { IsOptional, IsDateString } from 'class-validator';
 
 interface RequestWithUser extends Request {
-  user: {
-    id: string; // Matches what JwtStrategy.validate returns
-  };
+  user: { id: string };
 }
 
-@UseGuards(JwtAuthGuard) // Apply JWT guard to ALL routes in this controller
-@Controller('counters') // Base path /api/counters
+// DTO for optional archive body
+class ArchiveBodyDto {
+  @IsOptional() @IsDateString() archiveAt?: string;
+}
+
+@UseGuards(JwtAuthGuard)
+@Controller('counters')
 export class CountersController {
   constructor(private readonly countersService: CountersService) {}
 
-  // POST /api/counters
   @Post()
   @HttpCode(HttpStatus.CREATED)
   create(
     @Body() createCounterDto: CreateCounterDto,
     @Req() req: RequestWithUser,
   ) {
-    const userId = req.user.id; // Extract user ID from the request object
-    return this.countersService.create(createCounterDto, userId);
+    return this.countersService.create(createCounterDto, req.user.id);
   }
 
-  // GET /api/counters/mine
   @Get('mine')
   findMine(@Req() req: RequestWithUser) {
-    const userId = req.user.id;
-    return this.countersService.findMine(userId);
+    return this.countersService.findMine(req.user.id);
   }
 
-  // PATCH /api/counters/:id
   @Patch(':id')
   update(
-    @Param('id', ParseUUIDPipe) id: string, // Validate :id is a UUID
+    @Param('id', ParseUUIDPipe) id: string,
     @Body() updateCounterDto: UpdateCounterDto,
     @Req() req: RequestWithUser,
   ) {
-    const userId = req.user.id;
-    return this.countersService.update(id, updateCounterDto, userId);
+    return this.countersService.update(id, updateCounterDto, req.user.id);
   }
 
-  // DELETE /api/counters/:id
   @Delete(':id')
-  @HttpCode(HttpStatus.NO_CONTENT) // Return 204 No Content on success
+  @HttpCode(HttpStatus.NO_CONTENT)
   remove(@Param('id', ParseUUIDPipe) id: string, @Req() req: RequestWithUser) {
-    const userId = req.user.id;
-    return this.countersService.remove(id, userId);
+    return this.countersService.remove(id, req.user.id);
   }
 
-  // --- Archive/Unarchive Routes ---
-
-  // PATCH /api/counters/:id/archive
+  // Modified Archive Route
   @Patch(':id/archive')
-  archive(@Param('id', ParseUUIDPipe) id: string, @Req() req: RequestWithUser) {
-    const userId = req.user.id;
-    return this.countersService.archive(id, userId);
+  archive(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Req() req: RequestWithUser,
+    @Body() body?: ArchiveBodyDto,
+  ) {
+    const archiveDate = body?.archiveAt ? new Date(body.archiveAt) : undefined;
+    return this.countersService.archive(id, req.user.id, archiveDate);
   }
 
-  // PATCH /api/counters/:id/unarchive
   @Patch(':id/unarchive')
   unarchive(
     @Param('id', ParseUUIDPipe) id: string,
     @Req() req: RequestWithUser,
   ) {
-    const userId = req.user.id;
-    return this.countersService.unarchive(id, userId);
+    return this.countersService.unarchive(id, req.user.id);
   }
 
-  // --- Public Routes (Implement Later) ---
-  // We haven't implemented the service logic for these yet
-  @Public() // Mark this route as public, bypassing controller-level JwtAuthGuard
+  @Public()
   @Get('public')
   findPublic(
-    // Use @Query() with pipes for validation and defaults
     @Query('page', new DefaultValuePipe(1), ParseIntPipe) page: number,
     @Query('limit', new DefaultValuePipe(12), ParseIntPipe) limit: number,
     @Query('sortBy', new DefaultValuePipe('createdAt'))
@@ -124,15 +116,9 @@ export class CountersController {
     return this.countersService.findPublic(options);
   }
 
-  @Public() // Mark as public
+  @Public()
   @Get(':id')
   findOnePublic(@Param('id', ParseUUIDPipe) id: string) {
-    // Service method handles view count increment and privacy check
     return this.countersService.findOnePublic(id);
   }
-
-  // GET /api/counters/:id (Needs service logic for public view, view count, no guard for public part)
-  // @Get(':id')
-  // @UseGuards() // Remove guard for public route / Handle auth internally
-  // findOnePublic(@Param('id', ParseUUIDPipe) id: string) { ... }
 }
