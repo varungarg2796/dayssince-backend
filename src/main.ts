@@ -18,7 +18,16 @@ async function bootstrap() {
 
   app.use(cookieParser());
 
-  app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
+  app.useGlobalPipes(
+    new ValidationPipe({
+      whitelist: true, // Strips properties not in DTO
+      transform: true, // Automatically transforms payloads to DTO instances
+      forbidNonWhitelisted: true, // Optional: Throw error if extra properties are sent
+      transformOptions: {
+        enableImplicitConversion: true, // Allows auto-conversion for query params etc.
+      },
+    }),
+  );
   await app.listen(3000);
   console.log(`Application is running on: ${await app.getUrl()}`);
 }

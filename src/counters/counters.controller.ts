@@ -1,3 +1,4 @@
+// src/counters/counters.controller.ts
 import {
   Controller,
   Get,
@@ -14,6 +15,7 @@ import {
   Query,
   ParseIntPipe,
   DefaultValuePipe,
+  ValidationPipe,
 } from '@nestjs/common';
 import { CreateCounterDto } from './dto/create-counter.dto';
 import { UpdateCounterDto } from './dto/update-counter.dto';
@@ -25,24 +27,39 @@ import {
   PaginatedCountersResult,
 } from './counters.service';
 import { Public } from '../auth/decorators/public.decorator';
-import { IsOptional, IsDateString } from 'class-validator';
+import {
+  IsOptional,
+  IsDateString,
+  IsString,
+  Length,
+  Matches,
+} from 'class-validator';
 
 interface RequestWithUser extends Request {
   user: { id: string };
 }
 
-// DTO for optional archive body
 class ArchiveBodyDto {
   @IsOptional() @IsDateString() archiveAt?: string;
 }
 
-@UseGuards(JwtAuthGuard)
+// DTO for slug param validation
+class SlugParamDto {
+  @IsString()
+  @Length(3, 80)
+  @Matches(/^[a-z0-9]+(?:-[a-z0-9]+)*$/)
+  slug: string;
+}
+
 @Controller('counters')
 export class CountersController {
   constructor(private readonly countersService: CountersService) {}
 
+  // --- Owner Actions ---
+
   @Post()
   @HttpCode(HttpStatus.CREATED)
+  @UseGuards(JwtAuthGuard)
   create(
     @Body() createCounterDto: CreateCounterDto,
     @Req() req: RequestWithUser,
@@ -51,46 +68,15 @@ export class CountersController {
   }
 
   @Get('mine')
+  @UseGuards(JwtAuthGuard)
   findMine(@Req() req: RequestWithUser) {
     return this.countersService.findMine(req.user.id);
   }
 
-  @Patch(':id')
-  update(
-    @Param('id', ParseUUIDPipe) id: string,
-    @Body() updateCounterDto: UpdateCounterDto,
-    @Req() req: RequestWithUser,
-  ) {
-    return this.countersService.update(id, updateCounterDto, req.user.id);
-  }
-
-  @Delete(':id')
-  @HttpCode(HttpStatus.NO_CONTENT)
-  remove(@Param('id', ParseUUIDPipe) id: string, @Req() req: RequestWithUser) {
-    return this.countersService.remove(id, req.user.id);
-  }
-
-  // Modified Archive Route
-  @Patch(':id/archive')
-  archive(
-    @Param('id', ParseUUIDPipe) id: string,
-    @Req() req: RequestWithUser,
-    @Body() body?: ArchiveBodyDto,
-  ) {
-    const archiveDate = body?.archiveAt ? new Date(body.archiveAt) : undefined;
-    return this.countersService.archive(id, req.user.id, archiveDate);
-  }
-
-  @Patch(':id/unarchive')
-  unarchive(
-    @Param('id', ParseUUIDPipe) id: string,
-    @Req() req: RequestWithUser,
-  ) {
-    return this.countersService.unarchive(id, req.user.id);
-  }
+  // --- Public Routes (Place BEFORE parameterized :id route) ---
 
   @Public()
-  @Get('public')
+  @Get('public') // <<< MOVED HERE
   findPublic(
     @Query('page', new DefaultValuePipe(1), ParseIntPipe) page: number,
     @Query('limit', new DefaultValuePipe(12), ParseIntPipe) limit: number,
@@ -117,8 +103,60 @@ export class CountersController {
   }
 
   @Public()
-  @Get(':id')
-  findOnePublic(@Param('id', ParseUUIDPipe) id: string) {
-    return this.countersService.findOnePublic(id);
+  @Get('/c/:slug') // Public view by SLUG
+  findOneBySlugPublic(
+    @Param(new ValidationPipe({ validateCustomDecorators: true }))
+    params: SlugParamDto,
+  ) {
+    return this.countersService.findOneBySlugPublic(params.slug);
+  }
+
+  // --- Parameterized Owner Routes (Place AFTER literal /public route) ---
+
+  // Owner view by ID
+  @Get(':id') // <<< NOW HERE
+  @UseGuards(JwtAuthGuard)
+  findOneOwned(
+    @Param('id', ParseUUIDPipe) id: string, // Keep pipe here
+    @Req() req: RequestWithUser,
+  ) {
+    return this.countersService.findOneOwned(id, req.user.id);
+  }
+
+  @Patch(':id')
+  @UseGuards(JwtAuthGuard)
+  update(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() updateCounterDto: UpdateCounterDto,
+    @Req() req: RequestWithUser,
+  ) {
+    return this.countersService.update(id, updateCounterDto, req.user.id);
+  }
+
+  @Delete(':id')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @UseGuards(JwtAuthGuard)
+  remove(@Param('id', ParseUUIDPipe) id: string, @Req() req: RequestWithUser) {
+    return this.countersService.remove(id, req.user.id);
+  }
+
+  @Patch(':id/archive')
+  @UseGuards(JwtAuthGuard)
+  archive(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Req() req: RequestWithUser,
+    @Body() body?: ArchiveBodyDto,
+  ) {
+    const archiveDate = body?.archiveAt ? new Date(body.archiveAt) : undefined;
+    return this.countersService.archive(id, req.user.id, archiveDate);
+  }
+
+  @Patch(':id/unarchive')
+  @UseGuards(JwtAuthGuard)
+  unarchive(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Req() req: RequestWithUser,
+  ) {
+    return this.countersService.unarchive(id, req.user.id);
   }
 }

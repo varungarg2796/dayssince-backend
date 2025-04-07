@@ -1,18 +1,23 @@
+// src/counters/counters.service.ts
 import {
   Injectable,
   NotFoundException,
   ForbiddenException,
+  ConflictException, // For slug conflicts
+  BadRequestException, // For validation errors
+  InternalServerErrorException, // For unexpected errors
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateCounterDto } from './dto/create-counter.dto';
 import { UpdateCounterDto } from './dto/update-counter.dto';
 import { Counter, Prisma } from '@prisma/client';
+import slugify from 'slugify'; // Import slugify
 
+// Interfaces (no change needed)
 export interface UserCounters {
   active: Counter[];
   archived: Counter[];
 }
-
 export interface FindPublicCountersOptions {
   page?: number;
   limit?: number;
@@ -21,9 +26,8 @@ export interface FindPublicCountersOptions {
   search?: string;
   tagSlugs?: string[];
 }
-
 export interface PaginatedCountersResult {
-  items: (Counter & { user?: { username: string } })[];
+  items: Counter[];
   totalItems: number;
   totalPages: number;
   currentPage: number;
@@ -34,14 +38,18 @@ export class CountersService {
   constructor(private readonly prisma: PrismaService) {}
 
   private readonly includeUserAndTags = {
-    tags: { include: { tag: true } },
+    tags: { select: { tag: true } },
     user: { select: { username: true } },
+    // slug is included by default
   };
 
-  private async findOneOrFail(
-    id: string,
-    userId: string,
-  ): Promise<Counter & { user: { username: string } }> {
+  private mapCounterTags(counter: any): Counter {
+    if (!counter) return counter;
+    const mappedTags = counter.tags?.map((ct: any) => ct.tag) ?? [];
+    return { ...counter, tags: mappedTags } as Counter;
+  }
+
+  private async findOneOrFail(id: string, userId: string): Promise<Counter> {
     const counter = await this.prisma.counter.findUnique({
       where: { id },
       include: this.includeUserAndTags,
@@ -51,29 +59,85 @@ export class CountersService {
     }
     if (counter.userId !== userId) {
       throw new ForbiddenException(
-        'You do not have permission to access this counter',
+        'You do not have permission to modify this counter',
       );
     }
-    return this.mapCounterTags(counter) as Counter & {
-      user: { username: string };
-    };
+    return this.mapCounterTags(counter);
   }
 
-  private mapCounterTags(counter: any) {
-    if (counter?.tags) {
-      const mappedTags = counter.tags.map((ct: any) => ct.tag);
-      return { ...counter, tags: mappedTags };
+  // Slug Generation and Uniqueness Helper
+  private async generateUniqueSlug(
+    inputText: string,
+    currentCounterId?: string,
+  ): Promise<string> {
+    const baseSlug = slugify(inputText || 'untitled', {
+      lower: true,
+      strict: true,
+      remove: /[*+~.()'"!:@]/g,
+      replacement: '-',
+    });
+    let slug = baseSlug;
+    let suffix = 2;
+    const maxAttempts = 10;
+    let attempts = 0;
+
+    while (attempts < maxAttempts) {
+      const whereCondition: Prisma.CounterWhereInput = { slug: slug };
+      if (currentCounterId) {
+        whereCondition.id = { not: currentCounterId };
+      }
+      const existingCounter = await this.prisma.counter.findFirst({
+        where: whereCondition,
+      });
+      if (!existingCounter) {
+        return slug;
+      } // Unique
+      slug = `${baseSlug}-${suffix}`;
+      suffix++;
+      attempts++;
     }
-    return counter;
+    console.error(
+      `Could not generate unique slug for base "${baseSlug}" after ${maxAttempts} attempts.`,
+    );
+    return `${baseSlug}-${Date.now().toString().slice(-4)}`; // Fallback
   }
 
   async create(
     createCounterDto: CreateCounterDto,
     userId: string,
   ): Promise<Counter> {
-    const { tagIds, startDate, ...restData } = createCounterDto;
+    const {
+      tagIds,
+      startDate,
+      name,
+      slug: userProvidedSlug,
+      isPrivate = false,
+      ...restData
+    } = createCounterDto;
+    let finalSlug = '';
+
+    // 1. Determine the slug
+    if (!isPrivate && userProvidedSlug) {
+      const existingBySlug = await this.prisma.counter.findUnique({
+        where: { slug: userProvidedSlug },
+      });
+      if (existingBySlug) {
+        throw new ConflictException(
+          `Slug "${userProvidedSlug}" is already taken. Please choose another.`,
+        );
+      }
+      finalSlug = userProvidedSlug;
+    } else {
+      // Private, or public but no user slug provided - auto-generate
+      finalSlug = await this.generateUniqueSlug(name);
+    }
+
+    // 2. Prepare data
     const data: Prisma.CounterCreateInput = {
       ...restData,
+      name,
+      slug: finalSlug, // Slug is always required now
+      isPrivate,
       startDate: new Date(startDate),
       user: { connect: { id: userId } },
       ...(tagIds &&
@@ -85,11 +149,27 @@ export class CountersService {
           },
         }),
     };
-    const newCounter = await this.prisma.counter.create({
-      data,
-      include: this.includeUserAndTags,
-    });
-    return this.mapCounterTags(newCounter);
+
+    // 3. Create
+    try {
+      const newCounter = await this.prisma.counter.create({
+        data,
+        include: this.includeUserAndTags,
+      });
+      return this.mapCounterTags(newCounter);
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2002' &&
+        error.meta?.target === 'counters_slug_key'
+      ) {
+        throw new ConflictException(
+          'Failed to generate a unique URL slug. Please try changing the name slightly.',
+        );
+      }
+      console.error('Error creating counter:', error);
+      throw new InternalServerErrorException('Could not create the counter.');
+    }
   }
 
   async findMine(userId: string): Promise<UserCounters> {
@@ -109,10 +189,59 @@ export class CountersService {
     updateCounterDto: UpdateCounterDto,
     userId: string,
   ): Promise<Counter> {
-    await this.findOneOrFail(id, userId);
-    const { tagIds, startDate, ...restData } = updateCounterDto;
+    const existingCounter = await this.findOneOrFail(id, userId);
+    const {
+      tagIds,
+      startDate,
+      name,
+      slug: userProvidedSlug,
+      isPrivate,
+      ...restData
+    } = updateCounterDto;
+    let finalSlug = existingCounter.slug;
+    let slugNeedsUpdate = false;
+
+    // Determine if slug needs updating
+    if (name !== undefined && name !== existingCounter.name) {
+      slugNeedsUpdate = true;
+    }
+    if (userProvidedSlug !== undefined) {
+      slugNeedsUpdate = true;
+    }
+    const newPrivacy = isPrivate ?? existingCounter.isPrivate;
+    if (
+      !newPrivacy &&
+      existingCounter.isPrivate &&
+      userProvidedSlug === undefined
+    ) {
+      slugNeedsUpdate = true;
+    }
+
+    // Generate/Validate new slug if needed
+    if (slugNeedsUpdate) {
+      const newName = name ?? existingCounter.name;
+      const newIsPrivate = isPrivate ?? existingCounter.isPrivate;
+      if (!newIsPrivate && userProvidedSlug) {
+        const existingBySlug = await this.prisma.counter.findFirst({
+          where: { slug: userProvidedSlug, id: { not: id } },
+        });
+        if (existingBySlug) {
+          throw new ConflictException(
+            `Slug "${userProvidedSlug}" is already taken. Please choose another.`,
+          );
+        }
+        finalSlug = userProvidedSlug;
+      } else {
+        finalSlug = await this.generateUniqueSlug(newName, id);
+      }
+    }
+
+    // Prepare update data
     const data: Prisma.CounterUpdateInput = {
       ...restData,
+      ...(name !== undefined && { name }),
+      slug: finalSlug, // Always update slug field
+      ...(isPrivate !== undefined && { isPrivate }),
       ...(startDate && { startDate: new Date(startDate) }),
     };
     if (tagIds !== undefined) {
@@ -123,15 +252,30 @@ export class CountersService {
         }),
       };
     }
-    const updatedCounter = await this.prisma.counter.update({
-      where: { id },
-      data,
-      include: this.includeUserAndTags,
-    });
-    return this.mapCounterTags(updatedCounter);
+
+    // Perform update
+    try {
+      const updatedCounter = await this.prisma.counter.update({
+        where: { id },
+        data,
+        include: this.includeUserAndTags,
+      });
+      return this.mapCounterTags(updatedCounter);
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2002' &&
+        error.meta?.target === 'counters_slug_key'
+      ) {
+        throw new ConflictException(
+          'Failed to generate a unique URL slug during update. Please try changing the name or slug slightly.',
+        );
+      }
+      console.error('Error updating counter:', error);
+      throw new InternalServerErrorException('Could not update the counter.');
+    }
   }
 
-  // Modified archive method
   async archive(
     id: string,
     userId: string,
@@ -141,18 +285,18 @@ export class CountersService {
     if (counter.archivedAt) {
       return this.mapCounterTags(counter);
     }
-
     const finalArchiveDate =
       archiveDate instanceof Date && !isNaN(archiveDate.getTime())
         ? archiveDate
         : new Date();
-
     if (new Date(counter.startDate) > finalArchiveDate) {
-      throw new ForbiddenException(
+      throw new BadRequestException(
         'Archive date cannot be before the counter start date.',
       );
     }
-
+    if (finalArchiveDate > new Date()) {
+      throw new BadRequestException('Archive date cannot be in the future.');
+    }
     const archivedCounter = await this.prisma.counter.update({
       where: { id },
       data: { archivedAt: finalArchiveDate },
@@ -179,6 +323,43 @@ export class CountersService {
     await this.prisma.counter.delete({ where: { id } });
   }
 
+  // Find by SLUG (Public View)
+  async findOneBySlugPublic(slug: string): Promise<Counter> {
+    const counter = await this.prisma.counter.findUnique({
+      where: { slug },
+      include: this.includeUserAndTags,
+    });
+    if (!counter) {
+      throw new NotFoundException(`Counter with slug "${slug}" not found`);
+    }
+    if (counter.isPrivate) {
+      throw new NotFoundException(`Counter with slug "${slug}" not found`);
+    } // Hide private ones
+
+    // Increment view count
+    if (!counter.archivedAt) {
+      try {
+        await this.prisma.counter.update({
+          where: { id: counter.id },
+          data: { viewCount: { increment: 1 } },
+        });
+      } catch (error) {
+        console.error(
+          `Failed to increment view count for slug ${slug}:`,
+          error,
+        );
+      }
+    }
+    return this.mapCounterTags(counter);
+  }
+
+  // Find by ID (Owner View)
+  async findOneOwned(id: string, userId: string): Promise<Counter> {
+    // findOneOrFail handles ownership check & not found
+    return this.findOneOrFail(id, userId);
+  }
+
+  // Find Public Counters (Explore page)
   async findPublic(
     options: FindPublicCountersOptions = {},
   ): Promise<PaginatedCountersResult> {
@@ -195,17 +376,16 @@ export class CountersService {
     const where: Prisma.CounterWhereInput = {
       isPrivate: false,
       archivedAt: null,
-      ...(search && {
-        OR: [
-          { name: { contains: search, mode: 'insensitive' } },
-          { description: { contains: search, mode: 'insensitive' } },
-        ],
-      }),
-      ...(tagSlugs &&
-        tagSlugs.length > 0 && {
-          tags: { some: { tag: { slug: { in: tagSlugs } } } },
-        }),
     };
+    if (search) {
+      where.OR = [
+        { name: { contains: search, mode: 'insensitive' } },
+        { description: { contains: search, mode: 'insensitive' } },
+      ];
+    }
+    if (tagSlugs && tagSlugs.length > 0) {
+      where.tags = { some: { tag: { slug: { in: tagSlugs } } } };
+    }
     const orderBy: Prisma.CounterOrderByWithRelationInput = {};
     if (sortBy === 'popularity') {
       orderBy.viewCount = sortOrder;
@@ -229,23 +409,5 @@ export class CountersService {
     const mappedItems = items.map(this.mapCounterTags);
     const totalPages = Math.ceil(totalItems / limit);
     return { items: mappedItems, totalItems, totalPages, currentPage: page };
-  }
-
-  async findOnePublic(id: string): Promise<Counter | null> {
-    await this.prisma.counter.updateMany({
-      where: { id: id, isPrivate: false },
-      data: { viewCount: { increment: 1 } },
-    });
-    const counter = await this.prisma.counter.findUnique({
-      where: { id },
-      include: this.includeUserAndTags,
-    });
-    if (!counter) {
-      throw new NotFoundException(`Counter with ID ${id} not found`);
-    }
-    if (counter.isPrivate) {
-      throw new ForbiddenException('This counter is private');
-    }
-    return this.mapCounterTags(counter);
   }
 }

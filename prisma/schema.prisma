@@ -47,6 +47,7 @@ model Counter {
   viewCount   Int          @default(0) @map("view_count")
   createdAt   DateTime     @default(now()) @map("created_at")
   updatedAt   DateTime     @updatedAt @map("updated_at")
+  slug        String       @unique // Globally unique slug, required field
 
   user        User         @relation(fields: [userId], references: [id], onDelete: Cascade) // Relation to User
   tags        CounterTag[] // Relation field
