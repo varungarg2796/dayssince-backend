@@ -371,43 +371,68 @@ export class CountersService {
       search,
       tagSlugs,
     } = options;
-    const skip = (page - 1) * limit;
-    const take = limit;
+
+    // Build the where clause for filtering
     const where: Prisma.CounterWhereInput = {
       isPrivate: false,
       archivedAt: null,
     };
+
+    // Add search conditions if search term provided
     if (search) {
       where.OR = [
         { name: { contains: search, mode: 'insensitive' } },
         { description: { contains: search, mode: 'insensitive' } },
       ];
     }
+
+    // Add tags filtering
     if (tagSlugs && tagSlugs.length > 0) {
-      where.tags = { some: { tag: { slug: { in: tagSlugs } } } };
-    }
-    const orderBy: Prisma.CounterOrderByWithRelationInput = {};
-    if (sortBy === 'popularity') {
-      orderBy.viewCount = sortOrder;
-    } else {
-      orderBy[sortBy] = sortOrder;
-    }
-    if (sortBy !== 'createdAt') {
-      orderBy.createdAt = 'desc';
+      where.tags = {
+        some: {
+          tag: {
+            slug: { in: tagSlugs },
+          },
+        },
+      };
     }
 
+    // Build the orderBy clause for sorting
+    const orderBy: Prisma.CounterOrderByWithRelationInput = {};
+    // Handle different sort options
+    switch (sortBy) {
+      case 'popularity':
+        orderBy.viewCount = sortOrder;
+        break;
+      case 'startDate':
+        orderBy.startDate = sortOrder;
+        break;
+      case 'name':
+        orderBy.name = sortOrder;
+        break;
+      default: // 'createdAt' is default
+        orderBy.createdAt = sortOrder;
+    }
+
+    // Run count and findMany in a transaction
     const [totalItems, items] = await this.prisma.$transaction([
       this.prisma.counter.count({ where }),
       this.prisma.counter.findMany({
         where,
-        skip,
-        take,
         orderBy,
+        skip: (page - 1) * limit,
+        take: limit,
         include: this.includeUserAndTags,
       }),
     ]);
+
     const mappedItems = items.map(this.mapCounterTags);
-    const totalPages = Math.ceil(totalItems / limit);
-    return { items: mappedItems, totalItems, totalPages, currentPage: page };
+
+    return {
+      items: mappedItems,
+      totalItems,
+      totalPages: Math.ceil(totalItems / limit),
+      currentPage: page,
+    };
   }
 }
