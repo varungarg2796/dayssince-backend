@@ -10,15 +10,36 @@ export class PrismaService
 {
   constructor() {
     super({
-      // Optional: Add Prisma client options here if needed
-      // log: ['query', 'info', 'warn', 'error'], // Uncomment to log all queries
+      datasourceUrl: process.env.DATABASE_URL,
     });
   }
 
   async onModuleInit() {
-    // Prisma recommends connecting explicitly, though it often connects lazily
-    await this.$connect();
-    console.log('Prisma Client Connected');
+    const maxRetries = 10;
+    const retryDelay = 5000; // 5 seconds between retries
+    let currentTry = 1;
+
+    while (currentTry <= maxRetries) {
+      try {
+        await this.$connect();
+        console.log('Successfully connected to database');
+        return;
+      } catch (error) {
+        console.log(
+          `Failed to connect to database (attempt ${currentTry}/${maxRetries}):`,
+          error.message,
+        );
+
+        if (currentTry === maxRetries) {
+          throw new Error(
+            'Failed to connect to database after maximum retries',
+          );
+        }
+
+        await new Promise((resolve) => setTimeout(resolve, retryDelay));
+        currentTry++;
+      }
+    }
   }
 
   async onModuleDestroy() {

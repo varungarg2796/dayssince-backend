@@ -57,6 +57,8 @@ This is the backend API server for the DaysSince project, built with NestJS, Pos
     ```dotenv
     # .env
 
+    #DATABASE_URL="postgresql://postgres:admin@localhost:5432/daysSince?schema=public" --> for local dev
+
     # PostgreSQL Connection URL
     DATABASE_URL="postgresql://YOUR_DB_USER:YOUR_DB_PASSWORD@YOUR_DB_HOST:YOUR_DB_PORT/YOUR_DB_NAME?schema=public"
 
@@ -64,6 +66,7 @@ This is the backend API server for the DaysSince project, built with NestJS, Pos
     GOOGLE_CLIENT_ID=YOUR_GOOGLE_CLIENT_ID
     GOOGLE_CLIENT_SECRET=YOUR_GOOGLE_CLIENT_SECRET
     GOOGLE_CALLBACK_URL=http://localhost:3000/api/auth/google/callback # Adjust port/path if needed
+
 
     # JWT Configuration
     JWT_SECRET=YOUR_SUPER_STRONG_RANDOM_JWT_SECRET_KEY_HERE

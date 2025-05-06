@@ -427,7 +427,6 @@ export class CountersService {
     ]);
 
     const mappedItems = items.map(this.mapCounterTags);
-
     return {
       items: mappedItems,
       totalItems,

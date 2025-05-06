@@ -9,6 +9,7 @@ import { AuthModule } from './auth/auth.module';
 import { UsersModule } from './users/users.module';
 import { CountersModule } from './counters/counters.module';
 import { TagsModule } from './tags/tags.module';
+import { HealthModule } from './health/health.module';
 
 @Module({
   imports: [
@@ -21,6 +22,7 @@ import { TagsModule } from './tags/tags.module';
     UsersModule,
     CountersModule,
     TagsModule,
+    HealthModule,
   ],
   controllers: [AppController],
   providers: [AppService],
