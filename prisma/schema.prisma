@@ -11,57 +11,61 @@ datasource db {
 
 // --- User Model ---
 model User {
-  id         String    @id @default(uuid()) // Changed to String for UUID
-  googleId   String?   @unique @map("google_id") // Maps to google_id column
-  email      String    @unique
-  username   String    @unique
-  password   String?   // Will store hashed password
-  name       String?
-  avatarUrl  String?   @map("avatar_url")
-  createdAt  DateTime  @default(now()) @map("created_at")
-  updatedAt  DateTime  @updatedAt @map("updated_at")
-  counters   Counter[] // Relation field: One User can have many Counters
+  id            String         @id @default(uuid()) // Changed to String for UUID
+  googleId      String?        @unique @map("google_id") // Maps to google_id column
+  email         String         @unique
+  username      String         @unique
+  password      String? // Will store hashed password
+  name          String?
+  avatarUrl     String?        @map("avatar_url")
+  createdAt     DateTime       @default(now()) @map("created_at")
+  updatedAt     DateTime       @updatedAt @map("updated_at")
+  counters      Counter[] // Relation field: One User can have many Counters
   refreshTokens RefreshToken[]
+
   @@map("users") // Maps this model to the 'users' table
 }
 
 // --- Tag Model ---
 model Tag {
-  id          Int      @id @default(autoincrement())
-  name        String   @unique
-  slug        String   @unique
-  counters    CounterTag[] // Relation field
+  id       Int          @id @default(autoincrement())
+  name     String       @unique
+  slug     String       @unique
+  counters CounterTag[] // Relation field
 
   @@map("tags")
 }
 
 // --- Counter Model ---
 model Counter {
-  id          String       @id @default(uuid()) // Changed to String for UUID
-  userId      String       @map("user_id")
+  id          String    @id @default(uuid()) // Changed to String for UUID
+  userId      String    @map("user_id")
   name        String
   description String?
-  startDate   DateTime     @map("start_date")
-  archivedAt  DateTime?    @map("archived_at")
-  isPrivate   Boolean      @default(false) @map("is_private")
-  viewCount   Int          @default(0) @map("view_count")
-  createdAt   DateTime     @default(now()) @map("created_at")
-  updatedAt   DateTime     @updatedAt @map("updated_at")
-  slug        String       @unique // Globally unique slug, required field
+  startDate   DateTime  @map("start_date")
+  archivedAt  DateTime? @map("archived_at")
+  isPrivate   Boolean   @default(false) @map("is_private")
+  viewCount   Int       @default(0) @map("view_count")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+  slug        String    @unique // Globally unique slug, required field
 
-  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade) // Relation to User
-  tags        CounterTag[] // Relation field
+  isChallenge           Boolean?  @default(false) @map("is_challenge")
+  challengeDurationDays Int?      @map("challenge_duration_days") // Duration in days
+  challengeAchievedAt   DateTime? @map("challenge_achieved_at") // Timestamp when goal was met
+
+  user User         @relation(fields: [userId], references: [id], onDelete: Cascade) // Relation to User
+  tags CounterTag[] // Relation field
 
   @@map("counters")
 }
 
 // --- Explicit Many-to-Many Join Table for Counters and Tags ---
 model CounterTag {
-  counterId   String    @map("counter_id")
-  tagId       Int       @map("tag_id")
-
-  counter     Counter   @relation(fields: [counterId], references: [id], onDelete: Cascade)
-  tag         Tag       @relation(fields: [tagId], references: [id], onDelete: Cascade)
+  counterId String  @map("counter_id")
+  tagId     Int     @map("tag_id")
+  counter   Counter @relation(fields: [counterId], references: [id], onDelete: Cascade)
+  tag       Tag     @relation(fields: [tagId], references: [id], onDelete: Cascade)
 
   @@id([counterId, tagId]) // Composite primary key
   @@map("counter_tags")
@@ -76,8 +80,7 @@ model RefreshToken {
   expiresAt DateTime @map("expires_at")
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at") // Tracks last usage implicitly
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade) // Link to User
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade) // Link to User
 
   @@index([userId]) // Index for quick lookup by user
   @@index([expiresAt]) // Index for cleaning up expired tokens

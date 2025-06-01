@@ -6,7 +6,7 @@ export class HealthController {
   @Get()
   checkHealth() {
     return {
-      status: 'ok',
+      status: 'ok-api',
       timestamp: new Date().toISOString(),
     };
   }

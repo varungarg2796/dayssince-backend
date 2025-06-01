@@ -11,42 +11,52 @@ import {
   Matches,
   MinLength,
   MaxLength,
+  Min, // Import Min decorator
 } from 'class-validator';
 
 export class CreateCounterDto {
   @IsString()
   @IsNotEmpty()
-  @MaxLength(100) // Add a reasonable max length for name
+  @MaxLength(100)
   name: string;
 
   @IsString()
   @IsOptional()
-  @MaxLength(500) // Add a reasonable max length for description
+  @MaxLength(500)
   description?: string;
 
   @IsDateString()
   @IsNotEmpty()
-  startDate: string; // Receive as string, convert to Date in service
+  startDate: string;
 
   @IsBoolean()
   @IsOptional()
-  isPrivate?: boolean; // Defaults to false in schema
+  isPrivate?: boolean;
 
   @IsArray()
   @IsInt({ each: true })
   @ArrayUnique()
   @IsOptional()
-  tagIds?: number[]; // Array of Tag IDs
+  tagIds?: number[];
 
-  // --- ADDED SLUG FIELD ---
   @IsString()
-  @IsOptional() // User doesn't have to provide it
+  @IsOptional()
   @MinLength(3, { message: 'Slug must be at least 3 characters long' })
-  @MaxLength(80, { message: 'Slug must be no more than 80 characters long' }) // Example length
+  @MaxLength(80, { message: 'Slug must be no more than 80 characters long' })
   @Matches(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, {
     message:
       'Slug must contain only lowercase letters, numbers, and hyphens (e.g., my-cool-counter)',
   })
   slug?: string;
-  // -----------------------
+
+  // --- NEW OPTIONAL CHALLENGE FIELDS ---
+  @IsBoolean()
+  @IsOptional()
+  isChallenge?: boolean;
+
+  @IsInt()
+  @Min(1, { message: 'Challenge duration must be at least 1 day.' }) // Ensure positive duration
+  @IsOptional()
+  challengeDurationDays?: number; // Duration in days
+  // We don't take challengeAchievedAt as input from the client
 }

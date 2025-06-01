@@ -3,17 +3,16 @@ import {
   Injectable,
   NotFoundException,
   ForbiddenException,
-  ConflictException, // For slug conflicts
-  BadRequestException, // For validation errors
-  InternalServerErrorException, // For unexpected errors
+  ConflictException,
+  BadRequestException,
+  InternalServerErrorException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateCounterDto } from './dto/create-counter.dto';
 import { UpdateCounterDto } from './dto/update-counter.dto';
-import { Counter, Prisma } from '@prisma/client';
-import slugify from 'slugify'; // Import slugify
+import { Counter, Prisma } from '@prisma/client'; // Prisma.Counter type will include new fields
+import slugify from 'slugify';
 
-// Interfaces (no change needed)
 export interface UserCounters {
   active: Counter[];
   archived: Counter[];
@@ -37,22 +36,26 @@ export interface PaginatedCountersResult {
 export class CountersService {
   constructor(private readonly prisma: PrismaService) {}
 
-  private readonly includeUserAndTags = {
+  // Consistent include object for all counter fetches
+  private readonly includeCounterDetails = {
     tags: { select: { tag: true } },
     user: { select: { username: true } },
-    // slug is included by default
+    // New scalar fields (isChallenge, challengeDurationDays, challengeAchievedAt)
+    // will be automatically included when selecting the Counter model.
   };
 
-  private mapCounterTags(counter: any): Counter {
-    if (!counter) return counter;
-    const mappedTags = counter.tags?.map((ct: any) => ct.tag) ?? [];
-    return { ...counter, tags: mappedTags } as Counter;
+  // Helper to map Prisma's tag structure to a simpler array of Tag objects
+  private mapCounterToResponseType(counterWithRelations: any): Counter {
+    if (!counterWithRelations) return counterWithRelations;
+    const { tags, ...counterData } = counterWithRelations;
+    const mappedTags = tags?.map((ct: any) => ct.tag) ?? [];
+    return { ...counterData, tags: mappedTags } as Counter;
   }
 
   private async findOneOrFail(id: string, userId: string): Promise<Counter> {
     const counter = await this.prisma.counter.findUnique({
       where: { id },
-      include: this.includeUserAndTags,
+      include: this.includeCounterDetails, // Use consistent include
     });
     if (!counter) {
       throw new NotFoundException(`Counter with ID ${id} not found`);
@@ -62,10 +65,9 @@ export class CountersService {
         'You do not have permission to modify this counter',
       );
     }
-    return this.mapCounterTags(counter);
+    return this.mapCounterToResponseType(counter);
   }
 
-  // Slug Generation and Uniqueness Helper
   private async generateUniqueSlug(
     inputText: string,
     currentCounterId?: string,
@@ -91,7 +93,7 @@ export class CountersService {
       });
       if (!existingCounter) {
         return slug;
-      } // Unique
+      }
       slug = `${baseSlug}-${suffix}`;
       suffix++;
       attempts++;
@@ -112,11 +114,21 @@ export class CountersService {
       name,
       slug: userProvidedSlug,
       isPrivate = false,
+      // --- CHALLENGE FIELDS ---
+      isChallenge = false, // Default from DTO if not provided
+      challengeDurationDays,
+      // --- END CHALLENGE FIELDS ---
       ...restData
     } = createCounterDto;
-    let finalSlug = '';
 
-    // 1. Determine the slug
+    // Validation for challenge fields
+    if (isChallenge && (challengeDurationDays === undefined || challengeDurationDays === null || challengeDurationDays < 1)) {
+      throw new BadRequestException(
+        'If this is a challenge, challengeDurationDays must be provided and be a positive number.',
+      );
+    }
+
+    let finalSlug = '';
     if (!isPrivate && userProvidedSlug) {
       const existingBySlug = await this.prisma.counter.findUnique({
         where: { slug: userProvidedSlug },
@@ -128,18 +140,21 @@ export class CountersService {
       }
       finalSlug = userProvidedSlug;
     } else {
-      // Private, or public but no user slug provided - auto-generate
       finalSlug = await this.generateUniqueSlug(name);
     }
 
-    // 2. Prepare data
     const data: Prisma.CounterCreateInput = {
-      ...restData,
+      ...restData, // Includes description if present
       name,
-      slug: finalSlug, // Slug is always required now
+      slug: finalSlug,
       isPrivate,
       startDate: new Date(startDate),
       user: { connect: { id: userId } },
+      // --- CHALLENGE FIELDS DATA ---
+      isChallenge: isChallenge,
+      challengeDurationDays: isChallenge ? challengeDurationDays : null,
+      challengeAchievedAt: null, // Always null on creation
+      // --- END CHALLENGE FIELDS DATA ---
       ...(tagIds &&
         tagIds.length > 0 && {
           tags: {
@@ -150,21 +165,20 @@ export class CountersService {
         }),
     };
 
-    // 3. Create
     try {
       const newCounter = await this.prisma.counter.create({
         data,
-        include: this.includeUserAndTags,
+        include: this.includeCounterDetails,
       });
-      return this.mapCounterTags(newCounter);
+      return this.mapCounterToResponseType(newCounter);
     } catch (error) {
       if (
         error instanceof Prisma.PrismaClientKnownRequestError &&
-        error.code === 'P2002' &&
-        error.meta?.target === 'counters_slug_key'
+        error.code === 'P2002' && // Unique constraint violation
+        (error.meta?.target as string[])?.includes('slug') // Check if it's the slug constraint
       ) {
         throw new ConflictException(
-          'Failed to generate a unique URL slug. Please try changing the name slightly.',
+          'Failed to generate a unique URL slug, or the provided slug is already taken. Please try changing the name or slug slightly.',
         );
       }
       console.error('Error creating counter:', error);
@@ -176,9 +190,9 @@ export class CountersService {
     const counters = await this.prisma.counter.findMany({
       where: { userId: userId },
       orderBy: { createdAt: 'desc' },
-      include: this.includeUserAndTags,
+      include: this.includeCounterDetails,
     });
-    const mappedCounters = counters.map(this.mapCounterTags);
+    const mappedCounters = counters.map(this.mapCounterToResponseType);
     const active = mappedCounters.filter((c) => c.archivedAt === null);
     const archived = mappedCounters.filter((c) => c.archivedAt !== null);
     return { active, archived };
@@ -190,85 +204,119 @@ export class CountersService {
     userId: string,
   ): Promise<Counter> {
     const existingCounter = await this.findOneOrFail(id, userId);
+
     const {
       tagIds,
       startDate,
       name,
       slug: userProvidedSlug,
       isPrivate,
+      // --- CHALLENGE FIELDS ---
+      isChallenge,
+      challengeDurationDays,
+      // challengeAchievedAt is not directly updatable via DTO for now
+      // --- END CHALLENGE FIELDS ---
       ...restData
     } = updateCounterDto;
-    let finalSlug = existingCounter.slug;
-    let slugNeedsUpdate = false;
 
-    // Determine if slug needs updating
-    if (name !== undefined && name !== existingCounter.name) {
-      slugNeedsUpdate = true;
-    }
-    if (userProvidedSlug !== undefined) {
-      slugNeedsUpdate = true;
-    }
-    const newPrivacy = isPrivate ?? existingCounter.isPrivate;
-    if (
-      !newPrivacy &&
-      existingCounter.isPrivate &&
-      userProvidedSlug === undefined
-    ) {
-      slugNeedsUpdate = true;
+    // Determine effective values for challenge fields
+    const effectiveIsChallenge = isChallenge !== undefined ? isChallenge : existingCounter.isChallenge;
+    let effectiveChallengeDurationDays = challengeDurationDays !== undefined
+        ? challengeDurationDays
+        : existingCounter.challengeDurationDays;
+    let effectiveChallengeAchievedAt = existingCounter.challengeAchievedAt;
+
+    if (effectiveIsChallenge && (effectiveChallengeDurationDays === undefined || effectiveChallengeDurationDays === null || effectiveChallengeDurationDays < 1)) {
+      throw new BadRequestException(
+        'If this is a challenge, challengeDurationDays must be provided and be a positive number.',
+      );
     }
 
-    // Generate/Validate new slug if needed
-    if (slugNeedsUpdate) {
-      const newName = name ?? existingCounter.name;
-      const newIsPrivate = isPrivate ?? existingCounter.isPrivate;
-      if (!newIsPrivate && userProvidedSlug) {
-        const existingBySlug = await this.prisma.counter.findFirst({
-          where: { slug: userProvidedSlug, id: { not: id } },
-        });
-        if (existingBySlug) {
-          throw new ConflictException(
-            `Slug "${userProvidedSlug}" is already taken. Please choose another.`,
-          );
-        }
-        finalSlug = userProvidedSlug;
-      } else {
-        finalSlug = await this.generateUniqueSlug(newName, id);
+    if (effectiveIsChallenge === false) {
+      effectiveChallengeDurationDays = null;
+      effectiveChallengeAchievedAt = null;
+    } else { // effectiveIsChallenge is true
+      // If key challenge parameters change, reset achievedAt for frontend recalculation
+      const oldStartDateStr = existingCounter.startDate.toISOString();
+      const newStartDateProvided = startDate ? new Date(startDate).toISOString() : null;
+
+      if ((newStartDateProvided && newStartDateProvided !== oldStartDateStr) ||
+          (challengeDurationDays !== undefined && challengeDurationDays !== existingCounter.challengeDurationDays)) {
+        effectiveChallengeAchievedAt = null;
       }
     }
 
-    // Prepare update data
+    let finalSlug = existingCounter.slug;
+    let slugNeedsUpdate = false;
+    const effectiveIsPrivate = isPrivate !== undefined ? isPrivate : existingCounter.isPrivate;
+
+    if (name !== undefined && name !== existingCounter.name) slugNeedsUpdate = true;
+    if (userProvidedSlug !== undefined && userProvidedSlug !== existingCounter.slug) slugNeedsUpdate = true;
+    if (isPrivate !== undefined && !effectiveIsPrivate && existingCounter.isPrivate && userProvidedSlug === undefined) {
+      // If making public and no new slug provided, may need to regenerate if old one was generic
+      slugNeedsUpdate = true;
+    }
+
+
+    if (slugNeedsUpdate) {
+      const newNameForSlug = name ?? existingCounter.name;
+      if (!effectiveIsPrivate && userProvidedSlug) {
+        if (userProvidedSlug !== existingCounter.slug) { // Only check for conflict if slug actually changes
+            const existingBySlug = await this.prisma.counter.findFirst({
+                where: { slug: userProvidedSlug, id: { not: id } },
+            });
+            if (existingBySlug) {
+                throw new ConflictException(
+                `Slug "${userProvidedSlug}" is already taken. Please choose another.`,
+                );
+            }
+        }
+        finalSlug = userProvidedSlug;
+      } else if (!effectiveIsPrivate) { // Auto-generate if becoming public or name changed for public
+        finalSlug = await this.generateUniqueSlug(newNameForSlug, id);
+      } else { // Is private, keep existing slug or generate based on name if name changed
+        finalSlug = name ? await this.generateUniqueSlug(name, id) : existingCounter.slug;
+      }
+    }
+
+
     const data: Prisma.CounterUpdateInput = {
       ...restData,
       ...(name !== undefined && { name }),
-      slug: finalSlug, // Always update slug field
-      ...(isPrivate !== undefined && { isPrivate }),
+      slug: finalSlug,
+      ...(isPrivate !== undefined && { isPrivate: effectiveIsPrivate }),
       ...(startDate && { startDate: new Date(startDate) }),
+      // --- CHALLENGE FIELDS DATA ---
+      isChallenge: effectiveIsChallenge,
+      challengeDurationDays: effectiveChallengeDurationDays,
+      challengeAchievedAt: effectiveChallengeAchievedAt,
+      // --- END CHALLENGE FIELDS DATA ---
     };
+
     if (tagIds !== undefined) {
       data.tags = {
-        deleteMany: {},
+        deleteMany: {}, // Clear existing tags
         ...(tagIds.length > 0 && {
           create: tagIds.map((tagId) => ({ tag: { connect: { id: tagId } } })),
         }),
       };
     }
 
-    // Perform update
     try {
       const updatedCounter = await this.prisma.counter.update({
         where: { id },
         data,
-        include: this.includeUserAndTags,
+        include: this.includeCounterDetails,
       });
-      return this.mapCounterTags(updatedCounter);
+      return this.mapCounterToResponseType(updatedCounter);
     } catch (error) {
       if (
         error instanceof Prisma.PrismaClientKnownRequestError &&
         error.code === 'P2002' &&
-        error.meta?.target === 'counters_slug_key'
+        (error.meta?.target as string[])?.includes('slug')
       ) {
         throw new ConflictException(
-          'Failed to generate a unique URL slug during update. Please try changing the name or slug slightly.',
+          'Failed to generate a unique URL slug during update, or the provided slug is already taken. Please try changing the name or slug slightly.',
         );
       }
       console.error('Error updating counter:', error);
@@ -281,14 +329,15 @@ export class CountersService {
     userId: string,
     archiveDate?: Date,
   ): Promise<Counter> {
-    const counter = await this.findOneOrFail(id, userId);
+    const counter = await this.findOneOrFail(id, userId); // findOneOrFail now includes challenge fields
     if (counter.archivedAt) {
-      return this.mapCounterTags(counter);
+      return this.mapCounterToResponseType(counter); // Already archived
     }
     const finalArchiveDate =
       archiveDate instanceof Date && !isNaN(archiveDate.getTime())
         ? archiveDate
         : new Date();
+
     if (new Date(counter.startDate) > finalArchiveDate) {
       throw new BadRequestException(
         'Archive date cannot be before the counter start date.',
@@ -297,69 +346,63 @@ export class CountersService {
     if (finalArchiveDate > new Date()) {
       throw new BadRequestException('Archive date cannot be in the future.');
     }
+
     const archivedCounter = await this.prisma.counter.update({
       where: { id },
       data: { archivedAt: finalArchiveDate },
-      include: this.includeUserAndTags,
+      include: this.includeCounterDetails,
     });
-    return this.mapCounterTags(archivedCounter);
+    return this.mapCounterToResponseType(archivedCounter);
   }
 
   async unarchive(id: string, userId: string): Promise<Counter> {
-    const counter = await this.findOneOrFail(id, userId);
+    const counter = await this.findOneOrFail(id, userId); // findOneOrFail now includes challenge fields
     if (!counter.archivedAt) {
-      return this.mapCounterTags(counter);
+      return this.mapCounterToResponseType(counter); // Already active
     }
     const unarchivedCounter = await this.prisma.counter.update({
       where: { id },
       data: { archivedAt: null },
-      include: this.includeUserAndTags,
+      include: this.includeCounterDetails,
     });
-    return this.mapCounterTags(unarchivedCounter);
+    return this.mapCounterToResponseType(unarchivedCounter);
   }
 
   async remove(id: string, userId: string): Promise<void> {
-    await this.findOneOrFail(id, userId);
+    await this.findOneOrFail(id, userId); // Ensures ownership and existence
     await this.prisma.counter.delete({ where: { id } });
   }
 
-  // Find by SLUG (Public View)
   async findOneBySlugPublic(slug: string): Promise<Counter> {
     const counter = await this.prisma.counter.findUnique({
       where: { slug },
-      include: this.includeUserAndTags,
+      include: this.includeCounterDetails,
     });
     if (!counter) {
       throw new NotFoundException(`Counter with slug "${slug}" not found`);
     }
     if (counter.isPrivate) {
-      throw new NotFoundException(`Counter with slug "${slug}" not found`);
-    } // Hide private ones
+      throw new NotFoundException(`Counter with slug "${slug}" not found (private).`);
+    }
 
-    // Increment view count
     if (!counter.archivedAt) {
       try {
-        await this.prisma.counter.update({
+        // Fire and forget view count update
+        this.prisma.counter.update({
           where: { id: counter.id },
           data: { viewCount: { increment: 1 } },
-        });
-      } catch (error) {
-        console.error(
-          `Failed to increment view count for slug ${slug}:`,
-          error,
-        );
+        }).catch(err => console.error(`Failed to increment view count for ${slug}: ${err.message}`));
+      } catch (error) { // Should not be needed with .catch above
+        console.error( `Error during view count increment for slug ${slug}:`, error);
       }
     }
-    return this.mapCounterTags(counter);
+    return this.mapCounterToResponseType(counter);
   }
 
-  // Find by ID (Owner View)
   async findOneOwned(id: string, userId: string): Promise<Counter> {
-    // findOneOrFail handles ownership check & not found
     return this.findOneOrFail(id, userId);
   }
 
-  // Find Public Counters (Explore page)
   async findPublic(
     options: FindPublicCountersOptions = {},
   ): Promise<PaginatedCountersResult> {
@@ -372,13 +415,11 @@ export class CountersService {
       tagSlugs,
     } = options;
 
-    // Build the where clause for filtering
     const where: Prisma.CounterWhereInput = {
       isPrivate: false,
       archivedAt: null,
     };
 
-    // Add search conditions if search term provided
     if (search) {
       where.OR = [
         { name: { contains: search, mode: 'insensitive' } },
@@ -386,7 +427,6 @@ export class CountersService {
       ];
     }
 
-    // Add tags filtering
     if (tagSlugs && tagSlugs.length > 0) {
       where.tags = {
         some: {
@@ -397,24 +437,14 @@ export class CountersService {
       };
     }
 
-    // Build the orderBy clause for sorting
     const orderBy: Prisma.CounterOrderByWithRelationInput = {};
-    // Handle different sort options
     switch (sortBy) {
-      case 'popularity':
-        orderBy.viewCount = sortOrder;
-        break;
-      case 'startDate':
-        orderBy.startDate = sortOrder;
-        break;
-      case 'name':
-        orderBy.name = sortOrder;
-        break;
-      default: // 'createdAt' is default
-        orderBy.createdAt = sortOrder;
+      case 'popularity': orderBy.viewCount = sortOrder; break;
+      case 'startDate': orderBy.startDate = sortOrder; break;
+      case 'name': orderBy.name = sortOrder; break;
+      default: orderBy.createdAt = sortOrder;
     }
 
-    // Run count and findMany in a transaction
     const [totalItems, items] = await this.prisma.$transaction([
       this.prisma.counter.count({ where }),
       this.prisma.counter.findMany({
@@ -422,11 +452,12 @@ export class CountersService {
         orderBy,
         skip: (page - 1) * limit,
         take: limit,
-        include: this.includeUserAndTags,
+        include: this.includeCounterDetails,
       }),
     ]);
 
-    const mappedItems = items.map(this.mapCounterTags);
+    const mappedItems = items.map(this.mapCounterToResponseType);
+
     return {
       items: mappedItems,
       totalItems,
